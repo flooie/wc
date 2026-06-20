@@ -24,9 +24,10 @@ ctx = canvas.getContext("2d")
 W = canvas.width    # 960
 H = canvas.height   # 540
 
-# Flat pitch rectangle (HUD bar floats over the top strip).
+# Flat pitch rectangle. The HUD bar floats over the top strip and a commentary
+# ticker + progress bar occupy the bottom strip, so the whole screen is the game.
 PX, PY = 26, 46
-PW, PH = W - 52, H - 72
+PW, PH = W - 52, H - 92
 
 SPEEDS = [1, 2, 4, 8]
 BEAT = 0.85         # seconds per narrative beat (commentary entry) at 1x
@@ -63,6 +64,8 @@ state = {
     "trail": [],
     "flash": None,
     "ticker": "",
+    "ticker_prev": None,
+    "ticker_scroll": 0.0,
     "last_ts": None,
     "seed": 0x2545F491,
 }
@@ -73,6 +76,13 @@ _frame_proxy = None
 # ---------------------------------------------------------------------------
 def _qs(sel):
     return document.querySelector(sel)
+
+
+def _set_text(sel, text):
+    """Set an element's text if it exists (the canvas now owns most of the UI)."""
+    el = _qs(sel)
+    if el is not None:
+        el.innerText = text
 
 
 def _rnd():
@@ -350,6 +360,12 @@ def update(ts):
         if state["flash"]["t"] <= 0:
             state["flash"] = None
 
+    # Commentary ticker: restart the scroll whenever the line changes.
+    if state["ticker"] != state["ticker_prev"]:
+        state["ticker_prev"] = state["ticker"]
+        state["ticker_scroll"] = 0.0
+    state["ticker_scroll"] += real_dt * 70.0
+
     _update_hud()
 
 
@@ -559,6 +575,38 @@ def _draw_ball():
     ctx.fillRect(sx - 1.5, sy - 1.5, 3, 3)
 
 
+def _draw_ticker():
+    """Scrolling commentary line + match progress along the bottom strip."""
+    band_y = H - 40
+    ctx.fillStyle = "rgba(3,6,15,0.88)"
+    ctx.fillRect(0, band_y, W, 34)
+
+    text = state["ticker"] or "PRESS PLAY"
+    ctx.fillStyle = "#ffd43b"
+    ctx.font = "10px 'Press Start 2P', monospace"
+    ctx.textBaseline = "middle"
+    cy = band_y + 13
+    tw = ctx.measureText(text).width
+    if tw <= W - 32:
+        ctx.textAlign = "center"
+        ctx.fillText(text, W / 2, cy)
+    else:
+        ctx.textAlign = "left"
+        span = tw + 80
+        off = state["ticker_scroll"] % span
+        ctx.fillText(text, 16 - off, cy)
+        ctx.fillText(text, 16 - off + span, cy)  # seamless wrap
+
+    # progress bar
+    n = len(state["timeline"]) or 1
+    frac = min(1.0, state["idx"] / n)
+    py = H - 5
+    ctx.fillStyle = "rgba(255,255,255,0.14)"
+    ctx.fillRect(0, py, W, 4)
+    ctx.fillStyle = "#ffd43b"
+    ctx.fillRect(0, py, W * frac, 4)
+
+
 def draw():
     ctx.fillStyle = "#0b1020"
     ctx.fillRect(0, 0, W, H)
@@ -610,6 +658,8 @@ def draw():
         ctx.font = "11px 'Press Start 2P', monospace"
         ctx.fillText((flash["text"] + "  " + flash["sub"])[:52], W / 2, 78)
 
+    _draw_ticker()
+
 
 def frame(ts):
     update(ts)
@@ -621,14 +671,15 @@ def frame(ts):
 # HUD / DOM
 # ---------------------------------------------------------------------------
 def _update_score():
-    _qs("#sb-score").innerText = f'{state["score"][0]} - {state["score"][1]}'
+    # Score is rendered on the canvas HUD; keep optional DOM mirrors in sync.
+    _set_text("#sb-score", f'{state["score"][0]} - {state["score"][1]}')
 
 
 def _update_hud():
-    _qs("#sb-clock").innerText = f'{int(state["clock"])}\''
-    n = len(state["timeline"]) or 1
-    _qs("#progress-fill").style.width = f"{100.0 * state['idx'] / n:.1f}%"
-    _qs("#caption").innerText = state["ticker"]
+    # The clock, progress and commentary now live on the canvas; only mirror to
+    # DOM if those (optional) elements are present.
+    _set_text("#sb-clock", f'{int(state["clock"])}\'')
+    _set_text("#caption", state["ticker"])
 
 
 def _reset():
@@ -646,8 +697,8 @@ def _reset():
     state["ball"].update({"x": 0.5, "y": 0.5, "tx": 0.5, "ty": 0.5, "owner": -1,
                           "flight": False, "pending": -1, "shot": None, "speed": BALL_SPD})
     _give_ball_to("home")
-    _qs("#sb-home").innerText = state["home"]["abbr"]
-    _qs("#sb-away").innerText = state["away"]["abbr"]
+    _set_text("#sb-home", state["home"]["abbr"])
+    _set_text("#sb-away", state["away"]["abbr"])
     _update_score()
 
 
@@ -696,7 +747,7 @@ async def boot():
 
     event_id = _event_id()
     if not event_id:
-        _qs("#caption").innerText = "No match selected."
+        state["ticker"] = "NO MATCH SELECTED"
     else:
         try:
             resp = await fetch(f"{SUMMARY_URL}?event={event_id}")
@@ -704,12 +755,12 @@ async def boot():
                 raise RuntimeError(f"HTTP {resp.status}")
             parse_summary(await resp.json())
             if not state["timeline"]:
-                _qs("#caption").innerText = "No play-by-play yet for this match."
+                state["ticker"] = "NO PLAY-BY-PLAY FOR THIS MATCH YET"
             else:
                 state["playing"] = True
-                _qs("#play-btn").innerText = "⏸"
+                _set_text("#play-btn", "⏸")
         except Exception as exc:  # noqa: BLE001
-            _qs("#caption").innerText = f"Failed to load match: {exc}"
+            state["ticker"] = f"FAILED TO LOAD MATCH: {exc}"
 
     splash = _qs("#loading")
     if splash:

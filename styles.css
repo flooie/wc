@@ -233,26 +233,11 @@ body.arcade {
 }
 .back-link:hover { text-decoration: underline; }
 
-.scoreboard {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  justify-content: center;
-  background: #05070f;
-  border: 2px solid var(--border);
-  border-radius: 10px 10px 0 0;
-  padding: 0.8rem 1rem;
-  font-family: "Press Start 2P", var(--mono);
-}
-.sb-team { color: var(--text); font-size: 0.85rem; }
-.sb-score { color: var(--accent); font-size: 1.3rem; letter-spacing: 1px; }
-.sb-clock { color: var(--live); font-size: 0.85rem; margin-left: auto; }
-
 .screen {
   position: relative;
   background: #000;
   border: 2px solid var(--border);
-  border-top: none;
+  border-radius: 10px 10px 0 0;
   overflow: hidden;
   line-height: 0;
 }
@@ -276,22 +261,11 @@ body.arcade {
   );
   mix-blend-mode: multiply;
 }
-.caption {
-  position: absolute;
-  left: 0; right: 0; bottom: 0;
-  padding: 0.5rem 0.8rem;
-  background: rgba(3,6,15,0.78);
-  color: #fff;
-  font-family: "Press Start 2P", var(--mono);
-  font-size: 0.62rem;
-  line-height: 1.5;
-  text-align: center;
-  min-height: 1rem;
-}
 
 .arcade-controls {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.6rem;
   background: #05070f;
   border: 2px solid var(--border);
@@ -304,26 +278,6 @@ body.arcade {
   font-size: 0.7rem;
   padding: 0.5rem 0.7rem;
   min-width: 44px;
-}
-.progress {
-  flex: 1;
-  height: 14px;
-  background: #11151f;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  overflow: hidden;
-}
-.progress-fill {
-  height: 100%;
-  width: 0%;
-  background: linear-gradient(90deg, var(--live), var(--accent));
-  transition: width 0.1s linear;
-}
-.hint {
-  text-align: center;
-  color: var(--muted);
-  font-size: 0.8rem;
-  margin-top: 1rem;
 }
 
 .site-footer {

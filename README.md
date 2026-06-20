@@ -20,11 +20,20 @@ No JavaScript, no backend — just static files served from **GitHub Pages**.
 
 Clicking a match opens `match.html?event=<id>`, an **old-school video-game
 replay** drawn on an HTML5 `<canvas>` and driven by a `requestAnimationFrame`
-loop — written in Python (the browser cousin of an iOS SpriteKit scene). A
-virtual match clock advances and the match's key events (goals, cards,
-substitutions) fire at their minute, with a retro pixel pitch, scoreboard,
-scanline/CRT overlay, and play / restart / speed controls. Match details come
-from ESPN's summary endpoint:
+loop — written in Python (the browser cousin of an iOS SpriteKit scene). The
+**whole screen is the game**: the score, clock, shots and possession HUD, the
+scrolling commentary ticker and the progress bar are all rendered on the canvas
+(no surrounding stats panels). Two teams play in formation with passing,
+pressing, shooting and goalkeeper saves; a virtual match clock advances and the
+match's key events (goals, cards, substitutions) fire at their minute over a
+retro pixel pitch with a scanline/CRT overlay and play / restart / speed
+controls.
+
+The simulation animates plausible play *between* events — attackers shoot when
+they reach the final third and keepers dive to save — but those simulated shots
+never change the scoreline. The **score is owned entirely by ESPN's play-by-play
+feed**, so the result always matches reality. Match details come from ESPN's
+summary endpoint:
 
 ```
 https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/summary?event=<id>
