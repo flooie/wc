@@ -12,7 +12,7 @@ replay of the match's key events (see replay.py).
 import asyncio
 from datetime import date
 
-from pyscript import document, fetch, when, window
+from pyscript import document, fetch, when
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world"
 SCOREBOARD_URL = f"{BASE}/scoreboard"
@@ -110,9 +110,10 @@ def _match_card(event):
     else:
         score_html = '<span class="sep">vs</span>'
 
+    event_id = _esc(event.get("id", ""))
     return (
-        f'<article class="match {state_cls}" data-event-id="{_esc(event.get("id",""))}" '
-        f'tabindex="0" role="button" aria-label="Open match replay">'
+        f'<a class="match {state_cls}" href="match.html?event={event_id}" '
+        f'aria-label="Open match replay">'
         f'  <div class="match-status {state_cls}">{_esc(detail)}</div>'
         f'  <div class="scoreline">'
         f"    {_team_block(home, 'home')}"
@@ -121,7 +122,7 @@ def _match_card(event):
         f"  </div>"
         f'  <div class="match-meta">{_esc(note)}</div>'
         f'  <div class="match-cta">▶ Play replay</div>'
-        f"</article>"
+        f"</a>"
     )
 
 
@@ -143,25 +144,6 @@ def _render(data):
         return (order.get(st, 3), ev.get("date", ""))
 
     container.innerHTML = "".join(_match_card(ev) for ev in sorted(events, key=sort_key))
-
-
-# ---------------------------------------------------------------------------
-# Interaction
-# ---------------------------------------------------------------------------
-@when("click", "#matches")
-def on_match_click(event):
-    card = event.target.closest(".match")
-    if card is None:
-        return
-    event_id = card.getAttribute("data-event-id")
-    if event_id:
-        window.location.href = f"match.html?event={event_id}"
-
-
-@when("keydown", "#matches")
-def on_match_key(event):
-    if event.key in ("Enter", " "):
-        on_match_click(event)
 
 
 # ---------------------------------------------------------------------------
