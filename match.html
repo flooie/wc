@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Match Replay — Arcade Football</title>
+  <meta name="description" content="An old-school arcade-style replay of a World Cup match, rendered on canvas with Python via PyScript." />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="https://pyscript.net/releases/2024.11.1/core.css" />
+  <script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>
+
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="arcade">
+  <div id="loading">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>Loading match…</p>
+  </div>
+
+  <div class="arcade-wrap">
+    <a class="back-link" href="./index.html">‹ All matches</a>
+
+    <div id="scoreboard" class="scoreboard">
+      <span id="sb-home" class="sb-team">HOME</span>
+      <span id="sb-score" class="sb-score">0 - 0</span>
+      <span id="sb-away" class="sb-team">AWAY</span>
+      <span id="sb-clock" class="sb-clock">00'</span>
+    </div>
+
+    <div class="screen">
+      <canvas id="game" width="800" height="500">Your browser needs canvas support.</canvas>
+      <div class="scanlines" aria-hidden="true"></div>
+      <div id="caption" class="caption"></div>
+    </div>
+
+    <div class="arcade-controls">
+      <button id="restart-btn" type="button" title="Restart">⏮</button>
+      <button id="play-btn" type="button" title="Play / Pause">▶</button>
+      <button id="speed-btn" type="button" title="Speed">1×</button>
+      <div class="progress" id="progress"><div id="progress-fill" class="progress-fill"></div></div>
+    </div>
+
+    <p class="hint">Tip: ▶ plays the match minute-by-minute. Goals, cards and subs fire as they happened.</p>
+  </div>
+
+  <script type="py" src="./replay.py" config="./pyscript.toml"></script>
+</body>
+</html>

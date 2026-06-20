@@ -1,23 +1,22 @@
-"""World Cup scores, fetched and rendered in Python via PyScript.
+"""World Cup scoreboard, in Python via PyScript.
 
 Runs entirely in the browser (Pyodide). Data comes from ESPN's public
-soccer scoreboard API for the FIFA World Cup league (`fifa.world`).
+soccer scoreboard API for the FIFA World Cup league (`fifa.world`):
 
-ESPN endpoint:
-    https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard
-    ?dates=YYYYMMDD   (optional; defaults to the current matchday)
+    .../fifa.world/scoreboard?dates=YYYYMMDD
+
+Clicking a match opens `match.html?event=<id>`, a retro arcade-style
+replay of the match's key events (see replay.py).
 """
 
 import asyncio
 from datetime import date
 
-from pyscript import document, fetch, when
+from pyscript import document, fetch, when, window
 
-SCOREBOARD_URL = (
-    "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
-)
+BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world"
+SCOREBOARD_URL = f"{BASE}/scoreboard"
 
-# Handle to the running auto-refresh loop so we can cancel it.
 _auto_task = None
 
 
@@ -35,7 +34,6 @@ def _set_status(message, *, error=False):
 
 
 def _esc(text):
-    """Minimal HTML escaping for values we inject via innerHTML."""
     return (
         str(text)
         .replace("&", "&amp;")
@@ -46,32 +44,42 @@ def _esc(text):
 
 
 def _competitors(competition):
-    """Return (home, away) competitor dicts, tolerant of ordering."""
-    comps = competition.get("competitors", [])
+    comps = competition.get("competitors", []) or []
     home = next((c for c in comps if c.get("homeAway") == "home"), None)
     away = next((c for c in comps if c.get("homeAway") == "away"), None)
-    # Fall back to positional order if homeAway is missing.
     if home is None or away is None:
         home = comps[0] if comps else {}
         away = comps[1] if len(comps) > 1 else {}
     return home, away
 
 
-def _team_block(competitor, *, align):
+def _logo(team, size=48, *, abbr=""):
+    url = team.get("logo") or ""
+    if not url:
+        logos = team.get("logos") or []
+        url = logos[0].get("href") if logos else ""
+    if url:
+        return (
+            f'<span class="logo-wrap" style="width:{size}px;height:{size}px">'
+            f'<img src="{_esc(url)}" alt="{_esc(abbr)}" loading="lazy" /></span>'
+        )
+    return (
+        f'<span class="logo-wrap placeholder" style="width:{size}px;height:{size}px">⚽</span>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scoreboard rendering
+# ---------------------------------------------------------------------------
+def _team_block(competitor, align):
     team = competitor.get("team", {}) or {}
     name = team.get("shortDisplayName") or team.get("displayName") or "TBD"
     abbr = team.get("abbreviation", "")
-    logo = team.get("logo", "")
     winner = competitor.get("winner") is True
-    logo_html = (
-        f'<img class="logo" src="{_esc(logo)}" alt="{_esc(abbr)}" loading="lazy" />'
-        if logo
-        else '<span class="logo placeholder">⚽</span>'
-    )
     win_cls = " winner" if winner else ""
     return (
         f'<div class="team {align}{win_cls}">'
-        f"{logo_html}"
+        f"{_logo(team, 48, abbr=abbr)}"
         f'<span class="team-name">{_esc(name)}</span>'
         f"</div>"
     )
@@ -83,38 +91,36 @@ def _match_card(event):
 
     status = event.get("status", {}) or {}
     stype = status.get("type", {}) or {}
-    state = stype.get("state", "")  # "pre" | "in" | "post"
+    state = stype.get("state", "")  # pre | in | post
     detail = stype.get("shortDetail") or stype.get("detail") or ""
 
     home_score = home.get("score", "") if state != "pre" else ""
     away_score = away.get("score", "") if state != "pre" else ""
 
-    # Group / round label, e.g. "Group A".
     notes = competition.get("notes") or []
     note = notes[0].get("headline") if notes else ""
 
-    venue = (competition.get("venue") or {}).get("fullName", "")
-
     state_cls = {"in": "live", "post": "final", "pre": "upcoming"}.get(state, "")
-    score_html = (
-        f'<span class="score">{_esc(home_score)}</span>'
-        f'<span class="sep">–</span>'
-        f'<span class="score">{_esc(away_score)}</span>'
-        if state != "pre"
-        else '<span class="sep">vs</span>'
-    )
-
-    meta_bits = " · ".join(b for b in (_esc(note), _esc(venue)) if b)
+    if state != "pre":
+        score_html = (
+            f'<span class="score">{_esc(home_score)}</span>'
+            f'<span class="sep">–</span>'
+            f'<span class="score">{_esc(away_score)}</span>'
+        )
+    else:
+        score_html = '<span class="sep">vs</span>'
 
     return (
-        f'<article class="match {state_cls}">'
+        f'<article class="match {state_cls}" data-event-id="{_esc(event.get("id",""))}" '
+        f'tabindex="0" role="button" aria-label="Open match replay">'
         f'  <div class="match-status {state_cls}">{_esc(detail)}</div>'
         f'  <div class="scoreline">'
-        f"    {_team_block(home, align='home')}"
+        f"    {_team_block(home, 'home')}"
         f'    <div class="score-box">{score_html}</div>'
-        f"    {_team_block(away, align='away')}"
+        f"    {_team_block(away, 'away')}"
         f"  </div>"
-        f'  <div class="match-meta">{meta_bits}</div>'
+        f'  <div class="match-meta">{_esc(note)}</div>'
+        f'  <div class="match-cta">▶ Play replay</div>'
         f"</article>"
     )
 
@@ -125,19 +131,37 @@ def _render(data):
     if not events:
         league = (data.get("leagues") or [{}])[0].get("name", "World Cup")
         container.innerHTML = (
-            f'<p class="empty">No {_esc(league)} fixtures scheduled for this date.</p>'
+            f'<p class="empty">No {_esc(league)} fixtures scheduled for this date.<br>'
+            f"Try another date above.</p>"
         )
         return
 
-    # Live matches first, then upcoming, then finished.
     order = {"in": 0, "pre": 1, "post": 2}
 
     def sort_key(ev):
         st = ((ev.get("status") or {}).get("type") or {}).get("state", "")
         return (order.get(st, 3), ev.get("date", ""))
 
-    cards = "".join(_match_card(ev) for ev in sorted(events, key=sort_key))
-    container.innerHTML = cards
+    container.innerHTML = "".join(_match_card(ev) for ev in sorted(events, key=sort_key))
+
+
+# ---------------------------------------------------------------------------
+# Interaction
+# ---------------------------------------------------------------------------
+@when("click", "#matches")
+def on_match_click(event):
+    card = event.target.closest(".match")
+    if card is None:
+        return
+    event_id = card.getAttribute("data-event-id")
+    if event_id:
+        window.location.href = f"match.html?event={event_id}"
+
+
+@when("keydown", "#matches")
+def on_match_key(event):
+    if event.key in ("Enter", " "):
+        on_match_click(event)
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +184,8 @@ async def load_matches(event=None):
         return
 
     _render(data)
-    now = data.get("day", {}).get("date") or date_str or "today"
-    _set_status(f"Updated {now} · {len(data.get('events', []) or [])} match(es)")
+    n = len(data.get("events", []) or [])
+    _set_status(f"{n} match(es) · {date_str or 'today'}")
 
 
 @when("click", "#load-btn")
@@ -172,10 +196,9 @@ async def on_load_click(event=None):
 @when("change", "#auto-refresh")
 def on_auto_toggle(event=None):
     global _auto_task
-    enabled = _q("#auto-refresh").checked
-    if enabled and _auto_task is None:
+    if _q("#auto-refresh").checked and _auto_task is None:
         _auto_task = asyncio.ensure_future(_auto_refresh_loop())
-    elif not enabled and _auto_task is not None:
+    elif not _q("#auto-refresh").checked and _auto_task is not None:
         _auto_task.cancel()
         _auto_task = None
 
