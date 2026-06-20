@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PyScript on GitHub Pages — Live Python in the Browser</title>
-  <meta name="description" content="An interactive example of running Python in the browser with PyScript, deployed on GitHub Pages." />
+  <title>World Cup Scores — Python in the Browser</title>
+  <meta name="description" content="Live FIFA World Cup scores from the ESPN API, rendered with Python via PyScript. No JavaScript, no backend." />
 
   <!-- PyScript core (pinned release) -->
   <link rel="stylesheet" href="https://pyscript.net/releases/2024.11.1/core.css" />
@@ -13,17 +13,16 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <!-- Loading splash shown until PyScript is ready -->
   <div id="loading">
     <div class="spinner" aria-hidden="true"></div>
     <p>Booting the Python runtime in your browser…</p>
   </div>
 
   <header class="site-header">
-    <h1>🐍 PyScript on GitHub Pages</h1>
+    <h1>🏆 World Cup Scores</h1>
     <p class="tagline">
-      This entire page runs <strong>Python in your browser</strong> — no server, no install.
-      Just static files served by GitHub Pages.
+      Live FIFA World Cup fixtures from the <strong>ESPN API</strong>, fetched and
+      rendered entirely in <strong>Python</strong> via PyScript — no JavaScript, no backend.
     </p>
     <a class="repo-link" href="https://github.com/flooie/wc" target="_blank" rel="noopener">
       View source on GitHub →
@@ -31,49 +30,31 @@
   </header>
 
   <main>
-    <!-- Demo 1: Live expression evaluator -->
-    <section class="card">
-      <h2>1. Live Python evaluator</h2>
-      <p>Type any Python expression and evaluate it instantly. Try <code>2 ** 100</code> or <code>sum(range(1000))</code>.</p>
-      <div class="row">
-        <input id="expr-input" type="text" value="2 ** 100" aria-label="Python expression" />
-        <button id="eval-btn" type="button">Evaluate</button>
-      </div>
-      <pre id="eval-output" class="output"></pre>
+    <section class="controls">
+      <label for="date-input">Date</label>
+      <input id="date-input" type="date" aria-label="Match date" />
+      <button id="load-btn" type="button">Load fixtures</button>
+      <label class="auto-refresh">
+        <input id="auto-refresh" type="checkbox" /> Auto-refresh (30s)
+      </label>
+      <span id="status-line" class="status-line"></span>
     </section>
 
-    <!-- Demo 2: Interactive counter / DOM -->
-    <section class="card">
-      <h2>2. DOM interaction</h2>
-      <p>Python event handlers wired directly to HTML elements.</p>
-      <div class="row">
-        <button id="dec-btn" type="button">−</button>
-        <span id="counter" class="counter">0</span>
-        <button id="inc-btn" type="button">+</button>
-      </div>
-    </section>
-
-    <!-- Demo 3: Prime sieve -->
-    <section class="card">
-      <h2>3. Compute: primes up to N</h2>
-      <p>Run a real algorithm (Sieve of Eratosthenes) on the client side.</p>
-      <div class="row">
-        <input id="prime-n" type="number" value="100" min="2" max="100000" aria-label="Upper bound" />
-        <button id="prime-btn" type="button">Find primes</button>
-      </div>
-      <pre id="prime-output" class="output"></pre>
+    <section id="matches" class="matches">
+      <!-- Match cards are rendered here by Python -->
     </section>
   </main>
 
   <footer class="site-footer">
     <p>
-      Built with <a href="https://pyscript.net" target="_blank" rel="noopener">PyScript</a>
-      &amp; <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a>.
-      Deployed automatically to GitHub Pages.
+      Data from the public
+      <a href="https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard" target="_blank" rel="noopener">ESPN soccer API</a>.
+      Built with <a href="https://pyscript.net" target="_blank" rel="noopener">PyScript</a> &amp;
+      <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a>.
+      Not affiliated with ESPN or FIFA.
     </p>
   </footer>
 
-  <!-- The Python application -->
   <script type="py" src="./main.py" config="./pyscript.toml"></script>
 </body>
 </html>
