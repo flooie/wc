@@ -1,0 +1,10 @@
+# PyScript configuration.
+# See https://docs.pyscript.net/latest/user-guide/configuration/
+name = "PyScript GitHub Pages Example"
+description = "Interactive Python-in-the-browser demo deployed on GitHub Pages."
+
+# No third-party packages needed for these demos — everything uses the
+# Python standard library, which keeps the page fast to load.
+# To add packages from PyPI, list them here, e.g.:
+# packages = ["numpy", "matplotlib"]
+packages = []
