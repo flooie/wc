@@ -21,13 +21,18 @@ No JavaScript, no backend — just static files served from **GitHub Pages**.
 Clicking a match opens `match.html?event=<id>`, an **old-school video-game
 replay** drawn on an HTML5 `<canvas>` and driven by a `requestAnimationFrame`
 loop — written in Python (the browser cousin of an iOS SpriteKit scene). The
-**whole screen is the game**: the score, clock, shots and possession HUD, the
-scrolling commentary ticker and the progress bar are all rendered on the canvas
-(no surrounding stats panels). Two teams play in formation with passing,
-pressing, shooting and goalkeeper saves; a virtual match clock advances and the
-match's key events (goals, cards, substitutions) fire at their minute over a
-retro pixel pitch with a scanline/CRT overlay and play / restart / speed
-controls.
+pitch is rendered in **3/4 perspective** (a fake-3D ground plane) inside a
+floodlit stadium: a **crowd fills the far stand**, players are little
+**sprites** with shadows and shirt numbers, and a **camera pans along the
+touchline to follow the ball**. The **whole screen is the game**: the score,
+clock, shots and a colored possession bar, the scrolling commentary ticker and
+the progress bar are all rendered on the canvas (no surrounding stats panels).
+Two teams play in formation with passing, pressing, shooting and goalkeeper
+saves; a virtual match clock advances and the match's key events (goals, cards,
+substitutions) fire at their minute. Goals trigger **confetti, a screen shake**
+and a retro fanfare; a scanline/CRT overlay and play / restart / speed / mute
+controls complete the cabinet. Optional **8-bit sound effects** (kick, save,
+goal, whistle) play through the Web Audio API and can be muted.
 
 The simulation animates plausible play *between* events — attackers shoot when
 they reach the final third and keepers dive to save — but those simulated shots
