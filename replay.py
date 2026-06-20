@@ -1,12 +1,10 @@
 """Old-school arcade replay of a World Cup match, drawn on a <canvas>.
 
-The browser cousin of an iOS SpriteKit scene: a perspective top-down
-pixel pitch with two teams of little numbered sprites and a ball,
-driven by a requestAnimationFrame loop — all in Python via PyScript.
-
-Playback steps through ESPN's play-by-play `commentary` feed (the
-bottom ticker), with `keyEvents` (goals, cards, subs) interleaved so
-the scoreboard and big captions fire at the right moment.
+A flat top-down landscape pitch with a small soccer-simulation engine:
+two teams in formation, possession, passing between teammates, pressing
+defenders, and scripted shots / goals / kickoffs. The narrative beat
+(possession side, ticker text, goals, cards) is driven by ESPN's
+play-by-play feed; the engine animates plausible movement in between.
 
     .../fifa.world/summary?event=<id>  ->  data["commentary"], data["keyEvents"]
 """
@@ -23,16 +21,21 @@ SUMMARY_URL = f"{BASE}/summary"
 
 canvas = document.querySelector("#game")
 ctx = canvas.getContext("2d")
-W = canvas.width
-H = canvas.height
+W = canvas.width    # 960
+H = canvas.height   # 540
 
-# Perspective trapezoid: far (top) edge narrow, near (bottom) edge wide.
-X_FAR_L, X_FAR_R = W * 0.30, W * 0.70
-X_NEAR_L, X_NEAR_R = W * 0.04, W * 0.96
-Y_FAR, Y_NEAR = 64, H - 28
+# Flat pitch rectangle (HUD bar floats over the top strip).
+PX, PY = 26, 46
+PW, PH = W - 52, H - 72
 
 SPEEDS = [1, 2, 4, 8]
-PACE = 0.55  # seconds per commentary entry at 1x
+BEAT = 0.85         # seconds per narrative beat (commentary entry) at 1x
+PASS_EVERY = 0.95   # seconds between engine pass/dribble decisions at 1x
+
+# Engine tuning (field units per second; field is 0..1 in each axis).
+SPD = 0.16
+SPRINT = 0.30
+BALL_SPD = 1.3
 
 state = {
     "ready": False,
@@ -40,18 +43,21 @@ state = {
     "speed_idx": 0,
     "clock": 0.0,
     "max_min": 90.0,
-    "timeline": [],       # merged, sorted: commentary + key events
+    "timeline": [],
     "idx": 0,
-    "entry_timer": 0.0,
+    "beat_timer": 0.0,
+    "pass_timer": 0.0,
+    "reset_timer": 0.0,
     "home": {"name": "HOME", "abbr": "HOM", "color": "#f4d300", "tokens": []},
     "away": {"name": "AWAY", "abbr": "AWY", "color": "#2f6bd6", "tokens": []},
     "score": [0, 0],
-    "players": [],        # {fx,fy,bx,by,side,num,att}
-    "ball": {"fx": 0.5, "fy": 0.5, "tx": 0.5, "ty": 0.5},
-    "carrier": -1,
-    "flash": None,        # {"text","sub","t","big"}
+    "poss": "home",
+    "players": [],
+    "ball": {"x": 0.5, "y": 0.5, "tx": 0.5, "ty": 0.5, "owner": -1, "flight": False, "pending": -1},
+    "flash": None,
     "ticker": "",
     "last_ts": None,
+    "seed": 0x2545F491,
 }
 
 _frame_proxy = None
@@ -62,16 +68,17 @@ def _qs(sel):
     return document.querySelector(sel)
 
 
+def _rnd():
+    state["seed"] = (1103515245 * state["seed"] + 12345) & 0x7FFFFFFF
+    return state["seed"] / 0x7FFFFFFF
+
+
 def _to_screen(fx, fy):
-    lx = X_FAR_L + (X_NEAR_L - X_FAR_L) * fy
-    rx = X_FAR_R + (X_NEAR_R - X_FAR_R) * fy
-    sx = lx + (rx - lx) * fx
-    sy = Y_FAR + (Y_NEAR - Y_FAR) * fy
-    return sx, sy
+    return PX + fx * PW, PY + fy * PH
 
 
-def _depth(fy):
-    return 0.55 + 0.85 * fy  # sprites bigger when nearer (bottom)
+def _clamp(v, lo=0.0, hi=1.0):
+    return lo if v < lo else hi if v > hi else v
 
 
 def _color(team):
@@ -81,9 +88,7 @@ def _color(team):
 
 def _minute(clock_value):
     nums = re.findall(r"\d+", str(clock_value or ""))
-    if not nums:
-        return 0
-    return int(nums[0]) + (int(nums[1]) if len(nums) > 1 else 0)
+    return int(nums[0]) + (int(nums[1]) if len(nums) > 1 else 0) if nums else 0
 
 
 def _tokens(name):
@@ -113,68 +118,215 @@ def parse_summary(summary):
         side_by_id[str(team.get("id"))] = c.get("homeAway")
 
     timeline = []
-
     for ev in (summary.get("keyEvents") or []):
         etype = (ev.get("type") or {}).get("text", "") or ""
         low = etype.lower()
         team = ev.get("team") or {}
         side = side_by_id.get(str(team.get("id")), "")
-        who = next(
-            ((p.get("athlete") or {}).get("displayName")
-             for p in (ev.get("participants") or [])
-             if (p.get("athlete") or {}).get("displayName")), "")
+        who = next(((p.get("athlete") or {}).get("displayName")
+                    for p in (ev.get("participants") or [])
+                    if (p.get("athlete") or {}).get("displayName")), "")
         timeline.append({
             "minute": _minute((ev.get("clock") or {}).get("displayValue")),
-            "seq": (ev.get("sequence") or 0),
-            "kind": "key",
+            "seq": ev.get("sequence") or 0, "kind": "key",
             "side": side if side in ("home", "away") else "",
             "goal": ("goal" in low and "missed" not in low and "no goal" not in low),
-            "type": etype,
-            "who": who,
-            "text": ev.get("text") or etype,
+            "type": etype, "who": who, "text": ev.get("text") or etype,
         })
-
     for cm in (summary.get("commentary") or []):
-        text = cm.get("text") or ""
         timeline.append({
             "minute": _minute((cm.get("time") or {}).get("displayValue")),
-            "seq": cm.get("sequence") or 0,
-            "kind": "comm",
-            "text": text,
+            "seq": cm.get("sequence") or 0, "kind": "comm", "text": cm.get("text") or "",
         })
 
-    # Commentary sequence numbers run high->low (newest first); sort ascending
-    # by (minute, sequence) so playback is chronological.
     timeline.sort(key=lambda e: (e["minute"], e["seq"]))
     state["timeline"] = timeline
-    last = timeline[-1]["minute"] if timeline else 90
-    state["max_min"] = float(max(90, last))
-    state["players"] = _formation()
+    state["max_min"] = float(max(90, timeline[-1]["minute"] if timeline else 90))
+    _build_formation()
     state["ready"] = True
     _reset()
 
 
-def _formation():
+def _build_formation():
+    """4-3-3 for both sides in field coords (home attacks +x)."""
     players = []
-    layout_home = [(0.05, [0.5], 1), (0.20, [0.2, 0.4, 0.6, 0.8], 2),
-                   (0.37, [0.3, 0.5, 0.7], 6), (0.47, [0.3, 0.5, 0.7], 9)]
-    layout_away = [(0.95, [0.5], 1), (0.80, [0.2, 0.4, 0.6, 0.8], 2),
-                   (0.63, [0.3, 0.5, 0.7], 6), (0.53, [0.3, 0.5, 0.7], 9)]
-    for layout, side in ((layout_home, "home"), (layout_away, "away")):
-        for fx, ys, base_num in layout:
-            for i, fy in enumerate(ys):
-                is_gk = base_num == 1
+    # (x, [y...], role) — role 'gk' stays home.
+    home = [(0.06, [0.5], "gk"), (0.22, [0.2, 0.4, 0.6, 0.8], "def"),
+            (0.40, [0.3, 0.5, 0.7], "mid"), (0.50, [0.25, 0.5, 0.75], "fwd")]
+    away = [(0.94, [0.5], "gk"), (0.78, [0.2, 0.4, 0.6, 0.8], "def"),
+            (0.60, [0.3, 0.5, 0.7], "mid"), (0.50, [0.25, 0.5, 0.75], "fwd")]
+    num = {"home": 1, "away": 1}
+    for layout, side in ((home, "home"), (away, "away")):
+        for fx, ys, role in layout:
+            for fy in ys:
                 players.append({
-                    "fx": fx, "fy": fy, "bx": fx, "by": fy, "side": side,
-                    "num": base_num + i, "att": 0.05 if is_gk else 0.34,
+                    "x": fx, "y": fy, "bx": fx, "by": fy, "tx": fx, "ty": fy,
+                    "side": side, "role": role, "num": num[side],
                 })
-    return players
+                num[side] += 1
+    state["players"] = players
 
 
 # ---------------------------------------------------------------------------
-# Playback
+# Engine
 # ---------------------------------------------------------------------------
-def _poss_side(text):
+def _attack_dir(side):
+    return 1.0 if side == "home" else -1.0
+
+
+def _goal_x(side):
+    return 1.0 if side == "home" else 0.0
+
+
+def _teammates(side):
+    return [p for p in state["players"] if p["side"] == side]
+
+
+def _ball_owner():
+    o = state["ball"]["owner"]
+    return state["players"][o] if 0 <= o < len(state["players"]) else None
+
+
+def set_targets():
+    b = state["ball"]
+    poss = state["poss"]
+    adv = b["x"] - 0.5
+    owner = _ball_owner()
+
+    # find nearest defender to press the ball
+    presser = None
+    best = 9e9
+    for p in state["players"]:
+        if p["side"] != poss and p["role"] != "gk":
+            d = (p["x"] - b["x"]) ** 2 + (p["y"] - b["y"]) ** 2
+            if d < best:
+                best, presser = d, p
+
+    for p in state["players"]:
+        atk = _attack_dir(p["side"])
+        if p["role"] == "gk":
+            p["tx"] = _clamp(0.04 if p["side"] == "home" else 0.96)
+            p["ty"] = _clamp(0.5 + (b["y"] - 0.5) * 0.4, 0.3, 0.7)
+            continue
+        if p["side"] == poss:
+            if owner is not None and p is owner:
+                continue  # owner target handled by decide()
+            p["tx"] = _clamp(p["bx"] + atk * 0.14 + adv * 0.18)
+            p["ty"] = _clamp(p["by"] + (b["y"] - 0.5) * 0.18)
+        else:
+            if p is presser:
+                p["tx"], p["ty"] = _clamp(b["x"]), _clamp(b["y"])
+            else:
+                p["tx"] = _clamp(p["bx"] - atk * 0.05 + adv * 0.16)
+                p["ty"] = _clamp(p["by"] + (b["y"] - 0.5) * 0.28)
+
+
+def decide():
+    """Ball owner passes or dribbles toward goal."""
+    if state["reset_timer"] > 0:
+        return
+    b = state["ball"]
+    owner = _ball_owner()
+    if owner is None or b["flight"]:
+        return
+    gx = _goal_x(owner["side"])
+    mates = [p for p in _teammates(owner["side"]) if p is not owner and p["role"] != "gk"]
+
+    if _rnd() < 0.62 and mates:
+        # pass: prefer a teammate further toward goal, fairly close
+        atk = _attack_dir(owner["side"])
+        def score(m):
+            ahead = (m["x"] - owner["x"]) * atk
+            dist = math.hypot(m["x"] - owner["x"], m["y"] - owner["y"])
+            return ahead * 1.5 - dist + _rnd() * 0.3
+        target = max(mates, key=score)
+        b["flight"] = True
+        b["owner"] = -1
+        b["pending"] = state["players"].index(target)
+        b["tx"], b["ty"] = target["x"], target["y"]
+    else:
+        # dribble toward goal
+        owner["tx"] = _clamp(owner["x"] + _attack_dir(owner["side"]) * 0.16)
+        owner["ty"] = _clamp(owner["y"] + (_rnd() - 0.5) * 0.2)
+
+
+def _move_toward(p, dt, speed):
+    dx, dy = p["tx"] - p["x"], p["ty"] - p["y"]
+    d = math.hypot(dx, dy)
+    if d < 1e-4:
+        return
+    step = min(d, speed * dt)
+    p["x"] += dx / d * step
+    p["y"] += dy / d * step
+
+
+def update(ts):
+    if state["last_ts"] is None:
+        state["last_ts"] = ts
+    real_dt = min((ts - state["last_ts"]) / 1000.0, 0.1)
+    state["last_ts"] = ts
+    dt = real_dt * SPEEDS[state["speed_idx"]] if state["playing"] else 0.0
+
+    if dt > 0:
+        # Narrative beats
+        state["beat_timer"] += dt
+        guard = 0
+        while state["beat_timer"] >= BEAT and guard < 12:
+            state["beat_timer"] -= BEAT
+            advance_beat()
+            guard += 1
+        # Engine decisions
+        state["pass_timer"] += dt
+        if state["pass_timer"] >= PASS_EVERY:
+            state["pass_timer"] = 0.0
+            decide()
+        if state["reset_timer"] > 0:
+            state["reset_timer"] = max(0.0, state["reset_timer"] - dt)
+            if state["reset_timer"] == 0:
+                _kickoff()
+
+    set_targets()
+    b = state["ball"]
+
+    # Players move; presser sprints.
+    poss = state["poss"]
+    for p in state["players"]:
+        spd = SPRINT if (p["side"] != poss and (p["tx"] - b["x"]) ** 2 + (p["ty"] - b["y"]) ** 2 < 0.01) else SPD
+        _move_toward(p, dt, spd)
+
+    # Ball physics
+    if b["flight"]:
+        dx, dy = b["tx"] - b["x"], b["ty"] - b["y"]
+        d = math.hypot(dx, dy)
+        step = BALL_SPD * dt
+        if d <= step or d < 1e-3:
+            b["x"], b["y"] = b["tx"], b["ty"]
+            b["flight"] = False
+            if b["pending"] >= 0:
+                b["owner"] = b["pending"]
+                b["pending"] = -1
+        else:
+            b["x"] += dx / d * step
+            b["y"] += dy / d * step
+    else:
+        owner = _ball_owner()
+        if owner is not None:
+            atk = _attack_dir(owner["side"])
+            b["x"] += (owner["x"] + atk * 0.02 - b["x"]) * min(1.0, dt * 12)
+            b["y"] += (owner["y"] - b["y"]) * min(1.0, dt * 12)
+
+    if state["flash"]:
+        state["flash"]["t"] -= real_dt
+        if state["flash"]["t"] <= 0:
+            state["flash"] = None
+
+    _update_hud()
+
+
+# ---------------------------------------------------------------------------
+# Narrative beats (from the ESPN timeline)
+# ---------------------------------------------------------------------------
+def _poss_from_text(text):
     low = text.lower()
     for side in ("home", "away"):
         for tok in state[side]["tokens"]:
@@ -183,201 +335,145 @@ def _poss_side(text):
     return ""
 
 
-def advance_entry():
+def _give_ball_to(side):
+    """Hand possession to the team's nearest outfield player to the ball."""
+    state["poss"] = side
+    b = state["ball"]
+    best, who = 9e9, None
+    for i, p in enumerate(state["players"]):
+        if p["side"] == side and p["role"] != "gk":
+            d = (p["x"] - b["x"]) ** 2 + (p["y"] - b["y"]) ** 2
+            if d < best:
+                best, who = d, i
+    if who is not None:
+        b["owner"], b["flight"], b["pending"] = who, False, -1
+
+
+def advance_beat():
     if state["idx"] >= len(state["timeline"]):
         state["playing"] = False
         _qs("#play-btn").innerText = "▶"
-        state["flash"] = {"text": "FULL TIME", "sub": "", "t": 3.0, "big": True}
+        state["flash"] = {"text": "FULL TIME", "sub": "", "t": 4.0, "big": True}
         return
 
     e = state["timeline"][state["idx"]]
     state["idx"] += 1
     state["clock"] = float(e["minute"])
+    state["ticker"] = e.get("text", "")
 
     if e["kind"] == "key":
         if e["goal"] and e["side"]:
-            idx = 0 if e["side"] == "home" else 1
-            state["score"][idx] += 1
-            _update_score()
-            team = state["home"] if e["side"] == "home" else state["away"]
-            state["flash"] = {"text": "GOAL!", "sub": f"{e['minute']}'  {e['who'] or team['name']}",
-                              "t": 2.0, "big": True}
-            # ball to the goal that was scored on
-            state["ball"]["tx"] = 0.98 if e["side"] == "home" else 0.02
-            state["ball"]["ty"] = 0.5
-        else:
-            icon = ""
-            low = e["type"].lower()
-            if "yellow" in low:
-                icon = "🟨"
-            elif "red" in low:
-                icon = "🟥"
-            elif "sub" in low:
-                icon = "🔁"
-            state["flash"] = {"text": f"{icon} {e['type'].upper()}".strip(),
-                              "sub": f"{e['minute']}'  {e['who']}".strip(), "t": 1.6, "big": False}
-        state["ticker"] = e["text"]
-    else:
-        state["ticker"] = e["text"]
-        side = _poss_side(e["text"])
-        # Possessing team pushes the ball toward the opponent's goal.
-        if side == "home":
-            state["ball"]["tx"] = 0.55 + 0.4 * ((e["seq"] % 5) / 5)
-        elif side == "away":
-            state["ball"]["tx"] = 0.45 - 0.4 * ((e["seq"] % 5) / 5)
-        else:
-            state["ball"]["tx"] = 0.3 + 0.4 * ((e["minute"] % 7) / 7)
-        state["ball"]["ty"] = 0.2 + 0.6 * ((e["seq"] % 9) / 9)
+            _score_goal(e)
+            return
+        low = e["type"].lower()
+        icon = "🟨" if "yellow" in low else "🟥" if "red" in low else "🔁" if "sub" in low else ""
+        state["flash"] = {"text": f"{icon} {e['type'].upper()}".strip(),
+                          "sub": f"{e['minute']}'  {e['who']}".strip(), "t": 1.6, "big": False}
+
+    side = _poss_from_text(e.get("text", ""))
+    if side and side != state["poss"] and state["reset_timer"] == 0:
+        _give_ball_to(side)
 
 
-def update(ts):
-    if state["last_ts"] is None:
-        state["last_ts"] = ts
-    dt = min((ts - state["last_ts"]) / 1000.0, 0.1)
-    state["last_ts"] = ts
-
-    if state["playing"]:
-        state["entry_timer"] += dt
-        pace = PACE / SPEEDS[state["speed_idx"]]
-        guard = 0
-        while state["playing"] and state["entry_timer"] >= pace and guard < 20:
-            state["entry_timer"] -= pace
-            advance_entry()
-            guard += 1
-
-    # Ball easing (field coords).
+def _score_goal(e):
+    idx = 0 if e["side"] == "home" else 1
+    state["score"][idx] += 1
+    _update_score()
+    team = state["home"] if e["side"] == "home" else state["away"]
+    state["flash"] = {"text": "GOAL!", "sub": f"{e['minute']}'  {e['who'] or team['name']}",
+                      "t": 2.4, "big": True}
     b = state["ball"]
-    b["fx"] += (b["tx"] - b["fx"]) * min(1.0, dt * 4)
-    b["fy"] += (b["ty"] - b["fy"]) * min(1.0, dt * 4)
+    b["flight"], b["owner"], b["pending"] = True, -1, -1
+    b["tx"], b["ty"] = _goal_x(e["side"]), 0.5
+    state["reset_timer"] = 1.8
+    state["_kickoff_to"] = "away" if e["side"] == "home" else "home"
 
-    # Players swarm toward ball, weighted by their attraction; gentle jitter.
-    nearest, nd = -1, 9e9
-    for i, p in enumerate(state["players"]):
-        tx = p["bx"] + (b["fx"] - p["bx"]) * p["att"]
-        ty = p["by"] + (b["fy"] - p["by"]) * p["att"]
-        p["fx"] += (tx - p["fx"]) * min(1.0, dt * 3)
-        p["fy"] += (ty - p["fy"]) * min(1.0, dt * 3)
-        p["fx"] += math.sin(state["clock"] * 1.7 + i) * 0.0015
-        d = (p["fx"] - b["fx"]) ** 2 + (p["fy"] - b["fy"]) ** 2
-        if d < nd:
-            nd, nearest = d, i
-    state["carrier"] = nearest
 
-    if state["flash"]:
-        state["flash"]["t"] -= dt
-        if state["flash"]["t"] <= 0:
-            state["flash"] = None
-
-    _update_hud()
+def _kickoff():
+    for p in state["players"]:
+        p["x"], p["y"], p["tx"], p["ty"] = p["bx"], p["by"], p["bx"], p["by"]
+    state["ball"].update({"x": 0.5, "y": 0.5, "tx": 0.5, "ty": 0.5, "flight": False, "pending": -1})
+    _give_ball_to(state.get("_kickoff_to", "home"))
 
 
 # ---------------------------------------------------------------------------
 # Drawing
 # ---------------------------------------------------------------------------
-def _quad(p1, p2, p3, p4, fill):
-    ctx.beginPath()
-    ctx.moveTo(*p1)
-    ctx.lineTo(*p2)
-    ctx.lineTo(*p3)
-    ctx.lineTo(*p4)
-    ctx.closePath()
-    ctx.fillStyle = fill
-    ctx.fill()
-
-
-def _line(f1, f2):
-    a = _to_screen(*f1)
-    bb = _to_screen(*f2)
-    ctx.beginPath()
-    ctx.moveTo(*a)
-    ctx.lineTo(*bb)
-    ctx.stroke()
-
-
 def _draw_pitch():
-    bands = 12
-    for i in range(bands):
-        fy0, fy1 = i / bands, (i + 1) / bands
-        shade = "#2f8a3e" if i % 2 == 0 else "#2a7d39"
-        _quad(_to_screen(0, fy0), _to_screen(1, fy0),
-              _to_screen(1, fy1), _to_screen(0, fy1), shade)
+    stripes = 12
+    for i in range(stripes):
+        ctx.fillStyle = "#2f8a3e" if i % 2 == 0 else "#2a7d39"
+        ctx.fillRect(PX + i * PW / stripes, PY, PW / stripes + 1, PH)
 
     ctx.strokeStyle = "rgba(255,255,255,0.85)"
     ctx.lineWidth = 2
-    # Outline
+    ctx.strokeRect(PX, PY, PW, PH)
     ctx.beginPath()
-    ctx.moveTo(*_to_screen(0, 0))
-    for f in ((1, 0), (1, 1), (0, 1), (0, 0)):
-        ctx.lineTo(*_to_screen(*f))
+    ctx.moveTo(PX + PW / 2, PY)
+    ctx.lineTo(PX + PW / 2, PY + PH)
     ctx.stroke()
-    # Halfway line
-    _line((0.5, 0), (0.5, 1))
-    # Penalty boxes
-    for x0, x1 in ((0.0, 0.16), (0.84, 1.0)):
-        ctx.beginPath()
-        ctx.moveTo(*_to_screen(x0, 0.25))
-        for f in ((x1, 0.25), (x1, 0.75), (x0, 0.75)):
-            ctx.lineTo(*_to_screen(*f))
-        ctx.stroke()
-    # Centre circle (perspective ellipse)
-    cx, cy = _to_screen(0.5, 0.5)
-    w_mid = (X_NEAR_R - X_NEAR_L) * 0.5 + (X_FAR_R - X_FAR_L) * 0.5
     ctx.beginPath()
-    ctx.ellipse(cx, cy, w_mid * 0.5 * 0.18, 16, 0, 0, math.pi * 2)
+    ctx.arc(PX + PW / 2, PY + PH / 2, PH * 0.13, 0, math.pi * 2)
     ctx.stroke()
+    # penalty + goal boxes
+    bh, bw = PH * 0.5, PW * 0.13
+    sh, sw = PH * 0.24, PW * 0.05
+    for left in (True, False):
+        x = PX if left else PX + PW - bw
+        ctx.strokeRect(x, PY + (PH - bh) / 2, bw, bh)
+        xs = PX if left else PX + PW - sw
+        ctx.strokeRect(xs, PY + (PH - sh) / 2, sw, sh)
+    # goals
+    gh = PH * 0.16
+    ctx.fillStyle = "rgba(255,255,255,0.25)"
+    ctx.fillRect(PX - 6, PY + (PH - gh) / 2, 6, gh)
+    ctx.fillRect(PX + PW, PY + (PH - gh) / 2, 6, gh)
 
 
-def _draw_sprite(p):
-    sx, sy = _to_screen(p["fx"], max(0.0, min(1.0, p["fy"])))
-    sc = _depth(p["fy"])
-    color = state["home"]["color"] if p["side"] == "home" else state["away"]["color"]
-
-    if state["carrier"] == state["players"].index(p):
-        ctx.fillStyle = "rgba(255,212,59,0.35)"
+def _draw_player(p, highlight):
+    sx, sy = _to_screen(p["x"], p["y"])
+    color = state[p["side"]]["color"]
+    if highlight:
+        ctx.fillStyle = "rgba(255,212,59,0.40)"
         ctx.beginPath()
-        ctx.ellipse(sx, sy + 2 * sc, 9 * sc, 5 * sc, 0, 0, math.pi * 2)
+        ctx.arc(sx, sy, 13, 0, math.pi * 2)
         ctx.fill()
-
-    # shadow
-    ctx.fillStyle = "rgba(0,0,0,0.28)"
+    ctx.fillStyle = "rgba(0,0,0,0.30)"
     ctx.beginPath()
-    ctx.ellipse(sx, sy + 2 * sc, 6 * sc, 2.4 * sc, 0, 0, math.pi * 2)
+    ctx.ellipse(sx, sy + 9, 7, 3, 0, 0, math.pi * 2)
     ctx.fill()
-    # torso
     ctx.fillStyle = color
-    ctx.fillRect(sx - 3 * sc, sy - 9 * sc, 6 * sc, 9 * sc)
-    # head
-    ctx.fillStyle = "#e8c89a"
     ctx.beginPath()
-    ctx.arc(sx, sy - 11 * sc, 2.6 * sc, 0, math.pi * 2)
+    ctx.arc(sx, sy, 8, 0, math.pi * 2)
     ctx.fill()
-    # number
-    ctx.fillStyle = "#ffffff"
-    ctx.font = f"{max(7, int(7 * sc))}px monospace"
+    ctx.strokeStyle = "rgba(0,0,0,0.5)"
+    ctx.lineWidth = 1
+    ctx.stroke()
+    ctx.fillStyle = "#fff"
+    ctx.font = "bold 10px monospace"
     ctx.textAlign = "center"
-    ctx.fillText(str(p["num"]), sx, sy + 9 * sc)
+    ctx.textBaseline = "middle"
+    ctx.fillText(str(p["num"]), sx, sy)
 
 
 def _draw_ball():
     b = state["ball"]
-    sx, sy = _to_screen(b["fx"], b["fy"])
-    sc = _depth(b["fy"])
+    sx, sy = _to_screen(b["x"], b["y"])
     ctx.fillStyle = "rgba(0,0,0,0.3)"
     ctx.beginPath()
-    ctx.ellipse(sx, sy + 2 * sc, 3.5 * sc, 1.6 * sc, 0, 0, math.pi * 2)
+    ctx.ellipse(sx, sy + 5, 5, 2, 0, 0, math.pi * 2)
     ctx.fill()
-    ctx.fillStyle = "#ffffff"
+    ctx.fillStyle = "#fff"
     ctx.beginPath()
-    ctx.arc(sx, sy - 1 * sc, 3.2 * sc, 0, math.pi * 2)
+    ctx.arc(sx, sy, 5, 0, math.pi * 2)
     ctx.fill()
     ctx.fillStyle = "#111"
-    ctx.fillRect(sx - 1.2 * sc, sy - 2.2 * sc, 2.4 * sc, 2.4 * sc)
+    ctx.fillRect(sx - 1.5, sy - 1.5, 3, 3)
 
 
 def draw():
     ctx.fillStyle = "#0b1020"
     ctx.fillRect(0, 0, W, H)
-
     if not state["ready"]:
         ctx.fillStyle = "#9fb6c8"
         ctx.font = "16px 'Press Start 2P', monospace"
@@ -386,37 +482,37 @@ def draw():
         return
 
     _draw_pitch()
-    # Draw far players first for correct overlap.
-    for p in sorted(state["players"], key=lambda q: q["fy"]):
-        _draw_sprite(p)
+    owner = state["ball"]["owner"]
+    for i, p in enumerate(state["players"]):
+        _draw_player(p, i == owner)
     _draw_ball()
 
-    # In-screen HUD bar (BRA 3 - 0 HAI  46')
+    # HUD bar
+    ctx.textBaseline = "alphabetic"
     ctx.fillStyle = "rgba(3,6,15,0.82)"
-    ctx.fillRect(W / 2 - 150, 8, 300, 26)
+    ctx.fillRect(W / 2 - 170, 8, 340, 28)
     ctx.fillStyle = "#fff"
-    ctx.font = "12px 'Press Start 2P', monospace"
+    ctx.font = "13px 'Press Start 2P', monospace"
     ctx.textAlign = "center"
     ctx.fillText(
         f'{state["home"]["abbr"]} {state["score"][0]} - {state["score"][1]} {state["away"]["abbr"]}'
-        f'   {int(state["clock"])}\'',
-        W / 2, 26)
+        f'   {int(state["clock"])}\'', W / 2, 28)
 
     flash = state["flash"]
     if flash and flash["big"]:
         ctx.fillStyle = "#ffd43b"
-        ctx.font = "44px 'Press Start 2P', monospace"
-        ctx.fillText(flash["text"], W / 2, H / 2 - 4)
+        ctx.font = "52px 'Press Start 2P', monospace"
+        ctx.fillText(flash["text"], W / 2, H / 2 - 6)
         if flash["sub"]:
             ctx.fillStyle = "#fff"
-            ctx.font = "13px 'Press Start 2P', monospace"
-            ctx.fillText(flash["sub"], W / 2, H / 2 + 26)
+            ctx.font = "14px 'Press Start 2P', monospace"
+            ctx.fillText(flash["sub"], W / 2, H / 2 + 30)
     elif flash:
         ctx.fillStyle = "rgba(0,0,0,0.6)"
-        ctx.fillRect(W / 2 - 210, 40, 420, 26)
+        ctx.fillRect(W / 2 - 240, 42, 480, 26)
         ctx.fillStyle = "#fff"
         ctx.font = "11px 'Press Start 2P', monospace"
-        ctx.fillText((flash["text"] + "  " + flash["sub"])[:46], W / 2, 58)
+        ctx.fillText((flash["text"] + "  " + flash["sub"])[:52], W / 2, 60)
 
 
 def frame(ts):
@@ -442,13 +538,15 @@ def _update_hud():
 def _reset():
     state["clock"] = 0.0
     state["idx"] = 0
-    state["entry_timer"] = 0.0
+    state["beat_timer"] = state["pass_timer"] = state["reset_timer"] = 0.0
     state["score"] = [0, 0]
     state["flash"] = None
     state["ticker"] = ""
-    state["ball"].update({"fx": 0.5, "fy": 0.5, "tx": 0.5, "ty": 0.5})
-    for p in state["players"]:
-        p["fx"], p["fy"] = p["bx"], p["by"]
+    state["poss"] = "home"
+    _build_formation()
+    state["ball"].update({"x": 0.5, "y": 0.5, "tx": 0.5, "ty": 0.5,
+                          "owner": -1, "flight": False, "pending": -1})
+    _give_ball_to("home")
     _qs("#sb-home").innerText = state["home"]["abbr"]
     _qs("#sb-away").innerText = state["away"]["abbr"]
     _update_score()

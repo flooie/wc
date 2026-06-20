@@ -221,7 +221,7 @@ body.arcade {
   align-items: flex-start;
   padding: 1.5rem 1rem 3rem;
 }
-.arcade-wrap { width: min(840px, 100%); }
+.arcade-wrap { width: min(960px, 100%); }
 
 .back-link {
   display: inline-block;
